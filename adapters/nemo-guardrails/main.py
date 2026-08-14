@@ -220,6 +220,7 @@ def _load_csv(config: dict) -> list[dict]:
 
     samples = []
     with open(path, newline="", encoding="utf-8") as f:
+        csv.field_size_limit(10 * 1024 * 1024)  # 10 MB — accommodates large JSON tool responses
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
             if download_limit and i >= download_limit:
@@ -560,11 +561,41 @@ def _evaluate_prompt(
 
     if chunk_strategy == ChunkStrategy.JSON:
         raw_pairs = _json_chunks(prompt)
+
+        combined_chunks = []
+        new_chunk = ""
+        chunk_idx = 0
+        while chunk_idx < len(raw_pairs):
+            ready_to_add = chunk_idx == len(raw_pairs) - 1
+            candidate_chunk = raw_pairs[chunk_idx].strip()
+
+            if not candidate_chunk:
+                chunk_idx += 1
+                continue
+
+            if not new_chunk:
+                new_chunk = candidate_chunk
+                chunk_idx += 1
+            elif len(new_chunk + ", " + candidate_chunk) <= chunk_size:
+                new_chunk += ", " + candidate_chunk
+                chunk_idx += 1
+            else:
+                ready_to_add = True
+
+            if ready_to_add and new_chunk:
+                combined_chunks.append(new_chunk)
+                new_chunk = ""
+
         chunks = []
-        for pair in raw_pairs:
+        for pair in combined_chunks:
             chunks.extend(_chunk_prompt(pair, chunk_size, chunk_overlap))
     else:
         chunks = _chunk_prompt(prompt, chunk_size, chunk_overlap)
+
+    logger.debug("Evaluating %d chunk(s) (strategy=%s):", len(chunks), chunk_strategy.value)
+    for idx, chunk in enumerate(chunks):
+        logger.debug("  chunk[%d] (%d chars): %r", idx, len(chunk), chunk[:200])
+
     if len(chunks) == 1:
         return _evaluate_chunk(server_url, chunks[0])
 
