@@ -431,11 +431,15 @@ class ChunkStrategy(str, enum.Enum):
             (one request) but only sees the head of the prompt.
     NONE  — send the prompt whole in a single request, with no length
             bounding. Use when NeMo itself handles oversized prompts.
+    JSON  — try to parse the prompt as JSON and evaluate each leaf value
+            as a "key: value" string. Falls back to CHUNK if the prompt
+            is not valid JSON. Blocked if any key-value pair is blocked.
     """
 
     CHUNK = "chunk"
     LIMIT = "limit"
     NONE = "none"
+    JSON = "json"
 
 
 DEFAULT_CHUNK_STRATEGY = ChunkStrategy.CHUNK
@@ -461,6 +465,32 @@ def _chunk_prompt(prompt: str, max_chars: int, overlap: float = DEFAULT_CHUNK_OV
     overlap_chars = int(max_chars * overlap)
     step = max(1, max_chars - overlap_chars)
     return [prompt[i:i + max_chars] for i in range(0, len(prompt), step)]
+
+
+def _collect_kv_pairs(obj, prefix: str, out: list[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _collect_kv_pairs(v, f"{prefix}.{k}" if prefix else str(k), out)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            _collect_kv_pairs(v, f"{prefix}.{i}" if prefix else str(i), out)
+    else:
+        out.append(f"{prefix}: {obj}")
+
+
+def _json_chunks(prompt: str) -> list[str]:
+    """Parse prompt as JSON and return leaf "key: value" pairs.
+
+    Returns a single-element list containing the original prompt when the
+    prompt is not valid JSON or produces no leaf values.
+    """
+    try:
+        obj = json.loads(prompt)
+    except (json.JSONDecodeError, ValueError):
+        return [prompt]
+    chunks: list[str] = []
+    _collect_kv_pairs(obj, "", chunks)
+    return chunks if chunks else [prompt]
 
 
 def _evaluate_chunk(server_url: str, text: str) -> dict:
@@ -528,9 +558,15 @@ def _evaluate_prompt(
         text = prompt[:chunk_size] if chunk_size > 0 else prompt
         return _evaluate_chunk(server_url, text)
 
-    chunks = _chunk_prompt(prompt, chunk_size, chunk_overlap)
+    if chunk_strategy == ChunkStrategy.JSON:
+        raw_pairs = _json_chunks(prompt)
+        chunks = []
+        for pair in raw_pairs:
+            chunks.extend(_chunk_prompt(pair, chunk_size, chunk_overlap))
+    else:
+        chunks = _chunk_prompt(prompt, chunk_size, chunk_overlap)
     if len(chunks) == 1:
-        return _evaluate_chunk(server_url, prompt)
+        return _evaluate_chunk(server_url, chunks[0])
 
     total_ms = 0.0
     errors: list[str] = []

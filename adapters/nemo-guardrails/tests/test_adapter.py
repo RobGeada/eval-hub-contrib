@@ -246,6 +246,89 @@ class TestNemoGuardrailsAdapter:
         assert len(seen) == 1
         assert seen[0] == "A" * 2000
 
+    def test_json_chunks_flat_object(self):
+        from main import _json_chunks
+        prompt = '{"name": "Alice", "age": 30}'
+        chunks = _json_chunks(prompt)
+        assert "name: Alice" in chunks
+        assert "age: 30" in chunks
+
+    def test_json_chunks_nested_object(self):
+        from main import _json_chunks
+        prompt = '{"user": {"name": "Bob", "role": "admin"}}'
+        chunks = _json_chunks(prompt)
+        assert "user.name: Bob" in chunks
+        assert "user.role: admin" in chunks
+
+    def test_json_chunks_array(self):
+        from main import _json_chunks
+        prompt = '{"tags": ["foo", "bar"]}'
+        chunks = _json_chunks(prompt)
+        assert "tags.0: foo" in chunks
+        assert "tags.1: bar" in chunks
+
+    def test_json_chunks_invalid_json_falls_back(self):
+        from main import _json_chunks
+        prompt = "this is not json"
+        assert _json_chunks(prompt) == [prompt]
+
+    def test_evaluate_prompt_json_strategy_sends_kv_pairs(self, monkeypatch):
+        import main
+        prompt = '{"message": "hello", "user": "alice"}'
+        seen = []
+
+        def fake_chunk(server_url, text):
+            seen.append(text)
+            return {
+                "predicted_blocked": NemoResponses.ALLOW,
+                "response_time_ms": 5.0,
+                "response_time_ms_per_character": 0.1,
+                "error": None,
+            }
+
+        monkeypatch.setattr(main, "_evaluate_chunk", fake_chunk)
+        result = main._evaluate_prompt("http://x", prompt, chunk_strategy="json")
+        assert result["predicted_blocked"] == NemoResponses.ALLOW
+        assert "message: hello" in seen
+        assert "user: alice" in seen
+
+    def test_evaluate_prompt_json_strategy_blocks_if_any_kv_blocks(self, monkeypatch):
+        import main
+        prompt = '{"safe": "hello", "dangerous": "inject me"}'
+        calls = {"n": 0}
+
+        def fake_chunk(server_url, text):
+            calls["n"] += 1
+            status = NemoResponses.BLOCKED if "dangerous" in text else NemoResponses.ALLOW
+            return {
+                "predicted_blocked": status,
+                "response_time_ms": 5.0,
+                "response_time_ms_per_character": 0.1,
+                "error": None,
+            }
+
+        monkeypatch.setattr(main, "_evaluate_chunk", fake_chunk)
+        result = main._evaluate_prompt("http://x", prompt, chunk_strategy="json")
+        assert result["predicted_blocked"] == NemoResponses.BLOCKED
+
+    def test_evaluate_prompt_json_strategy_invalid_json_falls_back_to_chunk(self, monkeypatch):
+        import main
+        prompt = "not json at all"
+        seen = []
+
+        def fake_chunk(server_url, text):
+            seen.append(text)
+            return {
+                "predicted_blocked": NemoResponses.ALLOW,
+                "response_time_ms": 5.0,
+                "response_time_ms_per_character": 0.1,
+                "error": None,
+            }
+
+        monkeypatch.setattr(main, "_evaluate_chunk", fake_chunk)
+        main._evaluate_prompt("http://x", prompt, chunk_strategy="json")
+        assert seen == [prompt]
+
     def test_evaluate_prompt_none_strategy_sends_prompt_whole(self, monkeypatch):
         import main
         long_prompt = "A" * 5000
