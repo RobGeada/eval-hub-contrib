@@ -333,7 +333,7 @@ def _ensure_nemo_examples_dir():
 
 
 def _start_server(
-    config_path: str, port: int = 9999, host: str = "localhost",
+    config_path: str, port: int = 9999,
     log_path: str | None = None, verbose: bool = False,
 ) -> tuple[subprocess.Popen, str, str]:
     _ensure_nemo_examples_dir()
@@ -357,8 +357,8 @@ def _start_server(
     return proc, os.path.abspath(log_path), server_root
 
 
-def warmup_server(host: str, port: int, attempts: int = 30, timeout: int = 15) -> None:
-    url = f"http://{host}:{port}/v1/guardrail/checks"
+def warmup_server(port: int, attempts: int = 30, timeout: int = 15) -> None:
+    url = f"http://localhost:{port}/v1/guardrail/checks"
     payload = {
         "model": "dummy",
         "messages": [{"role": "user", "content": "hello"}],
@@ -385,10 +385,10 @@ def _stop_server(proc: subprocess.Popen) -> None:
 
 
 @contextmanager
-def managed_server(config_path: str, port: int = 9999, host: str = "localhost",
+def managed_server(config_path: str, port: int = 9999,
                    startup_timeout: int = 60, log_path: str | None = None,
                    verbose: bool = False):
-    proc, resolved_log_path, server_root = _start_server(config_path, port, host, log_path, verbose=verbose)
+    proc, resolved_log_path, server_root = _start_server(config_path, port, log_path, verbose=verbose)
 
     def _cleanup(*_args):
         if proc.poll() is None:
@@ -408,8 +408,8 @@ def managed_server(config_path: str, port: int = 9999, host: str = "localhost",
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
     try:
-        _wait_for_server(host, port, proc, startup_timeout)
-        yield f"http://{host}:{port}", resolved_log_path
+        _wait_for_server("localhost", port, proc, startup_timeout)
+        yield f"http://localhost:{port}", resolved_log_path
     finally:
         _cleanup()
         atexit.unregister(_cleanup)
@@ -780,7 +780,6 @@ class NemoGuardrailsAdapter(FrameworkAdapter):
 
         nemo_config_name = params.get("nemo_config", config.benchmark_id)
         server_port = int(params.get("server_port", 9999))
-        server_host = params.get("server_host", "localhost")
         startup_timeout = int(params.get("startup_timeout", 120))
         workers = int(params.get("workers", 1))
         verbose = str(params.get("verbose", "false")).lower() in ("true", "1", "yes")
@@ -835,10 +834,10 @@ class NemoGuardrailsAdapter(FrameworkAdapter):
 
         logger.info("Starting NeMo server on port %d", server_port)
 
-        with managed_server(config_path, server_port, server_host, startup_timeout, verbose=verbose) as (server_url, _):
+        with managed_server(config_path, server_port, startup_timeout, verbose=verbose) as (server_url, _):
             logger.info("NeMo server ready at %s", server_url)
             logger.info("Warming up server...")
-            warmup_server(server_host, server_port)
+            warmup_server(server_port)
             logger.info("Server warm-up complete")
             logger.info("Evaluating %d samples with %d worker(s)", len(samples), workers)
 
