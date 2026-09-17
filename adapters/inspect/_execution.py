@@ -7,9 +7,16 @@ import subprocess
 from pathlib import Path
 
 from evalhub.adapter import JobSpec
-from evalhub.adapter.auth import read_model_auth_key, resolve_model_credentials
+from evalhub.adapter.auth import resolve_model_credentials
 
 from _benchmarks import PETRI_SEED_MAP
+from _hf_auth import apply_hf_hub_auth, refresh_hf_hub_auth
+from _hf_offline import (
+    TEST_DATA_DIR,
+    configure_hf_offline_environment,
+    ensure_test_data_ready_for_offline,
+    should_use_hf_offline,
+)
 from _routing import _is_ollama_endpoint, role_model_spec, route_model, select_client, target_model_spec
 
 logger = logging.getLogger(__name__)
@@ -65,13 +72,17 @@ def build_env(config: JobSpec, mode: str) -> dict[str, str]:
         client = select_client(env, endpoint_url=config.model.url)
         env["INSPECT_EVAL_MODEL"] = route_model(config.model.name, client)
 
-    # Inject HF_TOKEN from sidecar-mounted secret if not already in env.
-    # inspect-evals benchmarks (e.g. humaneval) download datasets from HF Hub.
-    if not env.get("HF_TOKEN"):
-        hf_token = read_model_auth_key("hf-token")
-        if hf_token:
-            env["HF_TOKEN"] = hf_token
-            logger.info("Injected HF_TOKEN from mounted secret")
+    # Staged S3/PVC/git test data (test_data_ref) or tokenizer+/test_data layout → offline Hub.
+    if should_use_hf_offline(p):
+        configure_hf_offline_environment(TEST_DATA_DIR, env)
+        logger.info(
+            "HF offline mode: HF_HOME=%s (staged test data), Hub downloads disabled",
+            TEST_DATA_DIR,
+        )
+
+    # Gated datasets (Open-Telco, humaneval, mmlu, …) need Hub auth when not offline.
+    if env.get("HF_HUB_OFFLINE") != "1":
+        apply_hf_hub_auth(env)
 
     env["INSPECT_NO_TELEMETRY"] = "1"
     return env
@@ -231,6 +242,7 @@ def _petri_task_flags(
 
 
 def run_inspect(cmd: list[str], env: dict[str, str], log_dir: Path) -> Path:
+    refresh_hf_hub_auth(env)
     try:
         if env.get("EVALHUB_MODE", "") == "k8s":
             # allows long running benchmarks in k8s to run indefinitely
